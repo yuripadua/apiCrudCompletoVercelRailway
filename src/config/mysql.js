@@ -30,6 +30,9 @@ import {
   MYSQL_USER,
   MYSQL_PASSWORD,
   MYSQL_DATABASE,
+  MYSQL_PORT,
+  MYSQL_URL,
+  MYSQL_SSL,
 } from "./env.js"; // credenciais e nome do BD centralizados
 
 // Exportamos o pool para que outras partes do sistema possam executar queries.
@@ -52,15 +55,36 @@ export async function initMySql() {
   //    (ajuste conforme a carga do seu ambiente e limites do servidor MySQL).
   //  - queueLimit: máximo de requisições enfileiradas esperando conexão
   //    (0 = sem limite; cuidado para não enfileirar "infinitamente" sob carga).
-  mysqlPool = await mysql.createPool({
-    host: MYSQL_HOST, // ex.: "localhost" ou hostname/IP do servidor
-    user: MYSQL_USER, // ex.: "root" (evite root em produção; crie usuário com permissões mínimas)
-    password: MYSQL_PASSWORD, // senha do usuário configurado
-    database: MYSQL_DATABASE, // nome do schema/base que será usada
-    waitForConnections: true,
-    connectionLimit: 5,
-    queueLimit: 0,
-  });
+  if (MYSQL_URL && MYSQL_URL.startsWith("mysql://")) {
+    // Permite URL de conexão direta (ex.: Railway/PlanetScale)
+    const url = new URL(MYSQL_URL);
+    const dbName = (url.pathname || "").replace(/^\//, "");
+    const sslParam = url.searchParams.get("ssl");
+    const useSsl = MYSQL_SSL || (sslParam && sslParam !== "false");
+    mysqlPool = await mysql.createPool({
+      host: url.hostname,
+      user: decodeURIComponent(url.username),
+      password: decodeURIComponent(url.password),
+      database: dbName,
+      port: url.port ? parseInt(url.port, 10) : 3306,
+      waitForConnections: true,
+      connectionLimit: 5,
+      queueLimit: 0,
+      ssl: useSsl ? { rejectUnauthorized: false } : undefined,
+    });
+  } else {
+    mysqlPool = await mysql.createPool({
+      host: MYSQL_HOST, // ex.: "localhost" ou hostname/IP do servidor
+      user: MYSQL_USER, // ex.: "root" (evite root em produção; crie usuário com permissões mínimas)
+      password: MYSQL_PASSWORD, // senha do usuário configurado
+      database: MYSQL_DATABASE, // nome do schema/base que será usada
+      port: MYSQL_PORT,
+      waitForConnections: true,
+      connectionLimit: 5,
+      queueLimit: 0,
+      ssl: MYSQL_SSL ? { rejectUnauthorized: false } : undefined,
+    });
+  }
 
   // DICA DE DIAGNÓSTICO RÁPIDO (opcional):
   // Você pode testar a conexão com um ping simples:

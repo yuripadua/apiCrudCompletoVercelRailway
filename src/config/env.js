@@ -78,11 +78,37 @@ export const JWT_SECRET =
 // Configurações de conexão do MySQL para o módulo de Usuários.
 // - Em provedores de nuvem (Railway, PlanetScale, RDS, etc.), essas variáveis
 //   virão do painel de configuração/segredos.
-export const MYSQL_HOST = process.env.MYSQL_HOST || "localhost";
-export const MYSQL_USER = process.env.MYSQL_USER || "root";
-export const MYSQL_PASSWORD = process.env.MYSQL_PASSWORD || "admin";
+// Suporte a múltiplos nomes de variáveis (Railway e afins)
+function pickEnv(...keys) {
+  for (const k of keys) {
+    const v = process.env[k];
+    if (v !== undefined && v !== "") return v;
+  }
+  return undefined;
+}
+
+// Connection URL direta (se disponibilizada pelo provedor)
+export const MYSQL_URL =
+  pickEnv(
+    "MYSQL_URL",
+    "MYSQL_PUBLIC_URL",
+    "JAWSDB_URL",
+    "CLEARDB_DATABASE_URL",
+    "DATABASE_URL"
+  ) || "";
+
+export const MYSQL_HOST =
+  pickEnv("MYSQL_HOST", "MYSQLHOST") || "localhost";
+export const MYSQL_USER = pickEnv("MYSQL_USER", "MYSQLUSER") || "root";
+export const MYSQL_PASSWORD =
+  pickEnv("MYSQL_PASSWORD", "MYSQLPASSWORD") || "admin";
 export const MYSQL_DATABASE =
-  process.env.MYSQL_DATABASE || "aula_backend_uniso";
+  pickEnv("MYSQL_DATABASE", "MYSQLDATABASE") || "aula_backend_uniso";
+export const MYSQL_PORT = parseInt(
+  pickEnv("MYSQL_PORT", "MYSQLPORT") || "3306",
+  10
+);
+export const MYSQL_SSL = /^true$/i.test(pickEnv("MYSQL_SSL") || "false");
 
 // Caminhos de arquivos (SQLite e JSON):
 // - path.join(process.cwd(), ...) garante que esses caminhos serão resolvidos

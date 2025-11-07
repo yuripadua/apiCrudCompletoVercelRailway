@@ -48,13 +48,14 @@ export let sqliteDb = null;
  * - Deve ser chamada uma vez na inicialização do servidor (ver server.mjs).
  * - "better-sqlite3" abre conexão imediatamente; não há "await" aqui.
  */
-export function initSqlite() {
+export function initSqlite(fileOverride) {
   // ---------------------------------------------------------------------------
   // 1) Abrir/criar o arquivo do banco
   // ---------------------------------------------------------------------------
   // - Se SQLITE_FILE for "./notas.db", ele será criado na raiz do projeto.
   // - Em produção, é recomendável apontar para uma pasta com permissão de escrita.
-  sqliteDb = new Sqlite(SQLITE_FILE);
+  const dbPath = fileOverride || SQLITE_FILE;
+  sqliteDb = new Sqlite(dbPath);
 
   // DICAS (COMENTADAS para não alterar o comportamento em aula):
   // ---------------------------------------------------------------------------
@@ -79,6 +80,21 @@ export function initSqlite() {
       itens_json TEXT NOT NULL,             -- itens em JSON (ex.: [{"productId":1,"qtd":2}, ...])
       total REAL NOT NULL,                  -- valor total da NF (REAL = ponto flutuante)
       created_at TEXT NOT NULL              -- timestamp ISO (string)
+    );
+  `
+    )
+    .run();
+
+  // Tabela opcional para fallback de usuários quando MySQL não estiver disponível
+  sqliteDb
+    .prepare(
+      `
+    CREATE TABLE IF NOT EXISTS usuarios (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nome TEXT NOT NULL,
+      email TEXT NOT NULL UNIQUE,
+      senha_hash TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
     );
   `
     )
