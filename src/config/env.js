@@ -88,10 +88,11 @@ function pickEnv(...keys) {
 }
 
 // Connection URL direta (se disponibilizada pelo provedor)
+// Preferir URL pública do Railway quando existir (funciona fora da rede Railway)
 export const MYSQL_URL =
   pickEnv(
-    "MYSQL_URL",
     "MYSQL_PUBLIC_URL",
+    "MYSQL_URL",
     "JAWSDB_URL",
     "CLEARDB_DATABASE_URL",
     "DATABASE_URL"

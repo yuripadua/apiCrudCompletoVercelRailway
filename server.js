@@ -20,6 +20,7 @@
  */
 
 import express from "express";
+import path from "path";
 
 // Configurações (leem do .env) — centralizadas em src/config/env.js
 import { API_NAME, PORT, PRODUTOS_JSON } from "./src/config/env.js";
@@ -33,8 +34,12 @@ import { ensureJsonFile } from "./src/utils/fsJson.js";
 
 // Repositórios (cada um conversa com uma "fonte" de dados diferente)
 import { UsuarioMySqlRepository } from "./src/repositories/UsuarioMySqlRepository.js";
+import { UsuarioSqliteRepository } from "./src/repositories/UsuarioSqliteRepository.js";
+import { UsuarioMemoryRepository } from "./src/repositories/UsuarioMemoryRepository.js";
 import { ProdutoJsonRepository } from "./src/repositories/ProdutoJsonRepository.js";
+import { ProdutoMemoryRepository } from "./src/repositories/ProdutoMemoryRepository.js";
 import { NotaFiscalSqliteRepository } from "./src/repositories/NotaFiscalSqliteRepository.js";
+import { NotaFiscalMemoryRepository } from "./src/repositories/NotaFiscalMemoryRepository.js";
 
 // Services (regras de negócio)
 import { AuthService } from "./src/services/AuthService.js";
@@ -64,13 +69,9 @@ app.use(express.json());
  */
 async function bootstrap() {
   // --------------------------------------------------------------------------
-  // 1) Produtos "seed" no arquivo JSON
-  //    - A ideia é termos uma base inicial mais "real" para testar as notas.
-  //    - Se o arquivo não existir, será criado com esse conteúdo.
-  //    - Se já existir, NÃO sobrescrevemos (apenas garantimos que exista).
+  // 1) Produtos "seed" e fallback de armazenamento (JSON → /tmp → memória)
   // --------------------------------------------------------------------------
-  await ensureJsonFile(PRODUTOS_JSON, [
-    // Preços ajustados para algo mais plausível (e variados)
+  const produtosSeed = [
     { id: 1, nome: "Caneta esferográfica azul", preco: 3.5 },
     { id: 2, nome: "Caderno espiral 96 folhas", preco: 18.9 },
     { id: 3, nome: "Borracha branca", preco: 2.2 },
@@ -81,22 +82,89 @@ async function bootstrap() {
     { id: 8, nome: "Corretivo (caneta)", preco: 8.5 },
     { id: 9, nome: "Mochila escolar", preco: 159.9 },
     { id: 10, nome: "Lancheira térmica", preco: 99.9 },
-  ]);
+  ];
+
+  let produtosJsonPath = PRODUTOS_JSON;
+  let produtoRepo = null;
+  let produtosBackend = "json";
+  try {
+    await ensureJsonFile(produtosJsonPath, produtosSeed);
+    produtoRepo = new ProdutoJsonRepository(produtosJsonPath);
+  } catch (e1) {
+    try {
+      // Tenta /tmp em ambientes serverless
+      produtosJsonPath = path.join("/tmp", path.basename(PRODUTOS_JSON || "produtos.json"));
+      await ensureJsonFile(produtosJsonPath, produtosSeed);
+      produtoRepo = new ProdutoJsonRepository(produtosJsonPath);
+    } catch (e2) {
+      // Fallback final: memória
+      produtosBackend = "memory";
+      produtoRepo = new ProdutoMemoryRepository(produtosSeed);
+    }
+  }
 
   // --------------------------------------------------------------------------
-  // 2) Inicializa os bancos
-  //    - MySQL: cria pool e garante tabela "usuarios"
-  //    - SQLite: abre/gera arquivo e garante tabela "notas_fiscais"
+  // 2) SQLite: tenta caminho configurado → /tmp → memória (para Notas e, se
+  //    necessário, para Usuários)
   // --------------------------------------------------------------------------
-  await initMySql();
-  initSqlite();
+  let sqliteOk = false;
+  let sqlitePathInUse = null;
+  try {
+    initSqlite();
+    sqliteOk = true;
+    sqlitePathInUse = "(env)";
+  } catch (e1) {
+    try {
+      const tmpFile = path.join("/tmp", "notas.db");
+      initSqlite(tmpFile);
+      sqliteOk = true;
+      sqlitePathInUse = tmpFile;
+    } catch (e2) {
+      sqliteOk = false;
+    }
+  }
 
   // --------------------------------------------------------------------------
-  // 3) Instancia os repositórios (passando as dependências reais)
+  // 3) MySQL: tenta inicializar; se falhar, caímos para SQLite → Memória
   // --------------------------------------------------------------------------
-  const usuarioRepo = new UsuarioMySqlRepository(mysqlPool); // MySQL
-  const produtoRepo = new ProdutoJsonRepository(PRODUTOS_JSON); // JSON
-  const notaRepo = new NotaFiscalSqliteRepository(sqliteDb); // SQLite
+  let usuarioRepo = null;
+  let usuariosBackend = "mysql";
+  let mysqlConnected = false;
+  let mysqlHint = null;
+  try {
+    await initMySql();
+    usuarioRepo = new UsuarioMySqlRepository(mysqlPool);
+    mysqlConnected = true;
+  } catch (e) {
+    mysqlConnected = false;
+    // Dica específica quando URL interna do Railway estiver setada
+    if (
+      (process.env.MYSQL_URL || "").includes("mysql.railway.internal") &&
+      process.env.MYSQL_PUBLIC_URL
+    ) {
+      mysqlHint =
+        "MYSQL_URL aponta para 'mysql.railway.internal' (acesso interno). Use MYSQL_PUBLIC_URL para conexões externas (ex.: Vercel).";
+    }
+    if (sqliteOk) {
+      usuariosBackend = "sqlite";
+      usuarioRepo = new UsuarioSqliteRepository(sqliteDb);
+    } else {
+      usuariosBackend = "memory";
+      usuarioRepo = new UsuarioMemoryRepository();
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // 4) Notas: usa SQLite se disponível; caso contrário, memória
+  // --------------------------------------------------------------------------
+  let notaRepo = null;
+  let notasBackend = "sqlite";
+  if (sqliteOk) {
+    notaRepo = new NotaFiscalSqliteRepository(sqliteDb);
+  } else {
+    notasBackend = "memory";
+    notaRepo = new NotaFiscalMemoryRepository();
+  }
 
   // --------------------------------------------------------------------------
   // 4) Instancia os services (regras de negócio)
@@ -115,6 +183,22 @@ async function bootstrap() {
     res.json({
       ok: true,
       api: API_NAME,
+      backends: {
+        usuarios: usuariosBackend,
+        notas: notasBackend,
+        produtos: produtosBackend === "json" ? `json:${produtosJsonPath}` : "memory",
+        sqlite_file: sqliteOk ? sqlitePathInUse : null,
+      },
+      status: {
+        mysql_connected: mysqlConnected,
+        sqlite_ok: sqliteOk,
+        produtos_json: produtosBackend === "json",
+        produtos_path: produtosBackend === "json" ? produtosJsonPath : null,
+        falling_back_to_memory: usuariosBackend === "memory" || notasBackend === "memory" || produtosBackend === "memory",
+      },
+      warnings: [
+        ...(mysqlHint ? [mysqlHint] : []),
+      ],
       descricao:
         "API didática com autenticação JWT e CRUD distribuído em 3 camadas de persistência: Usuários (MySQL), Produtos (JSON) e Notas Fiscais (SQLite).",
       requisitos_gerais: [
